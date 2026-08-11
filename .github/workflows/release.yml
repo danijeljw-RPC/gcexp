@@ -1,0 +1,111 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use the exact format vX.Y.Z." >&2
+            exit 1
+          fi
+
+      - name: Check out repository history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag commit is on main
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "Release tags must point to a commit on the main branch." >&2
+            exit 1
+          fi
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: win-x64
+            script: ./build.ps1
+          - os: ubuntu-latest
+            arch: linux-x64
+            script: ./build.sh
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build ${{ matrix.arch }}
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ${{ matrix.script }}
+
+      - name: Build ${{ matrix.arch }}
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ${{ matrix.script }}
+
+      - name: Create Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "gcexp-${env:GITHUB_REF_NAME}-${{ matrix.arch }}.zip"
+          Compress-Archive -Path "publish/${{ matrix.arch }}/*" -DestinationPath $archive
+
+      - name: Create Linux archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          archive="gcexp-${GITHUB_REF_NAME}-${{ matrix.arch }}.zip"
+          (cd "publish/${{ matrix.arch }}" && zip -r "../../${archive}" .)
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: gcexp-${{ github.ref_name }}-${{ matrix.arch }}
+          path: gcexp-${{ github.ref_name }}-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v7
+        with:
+          pattern: gcexp-${{ github.ref_name }}-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            release-assets/gcexp-"${GITHUB_REF_NAME}"-*.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag
