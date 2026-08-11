@@ -1,0 +1,16 @@
+bin/
+obj/
+.vs/
+.vscode/
+.idea/
+TestResults/
+publish/
+*.pfx
+*.p12
+*.key
+*.pem.key
+*.password
+*.secret
+.gnupg/
+secring.*
+publish/
